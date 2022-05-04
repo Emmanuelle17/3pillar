@@ -1,0 +1,152 @@
+with dimorganisation as
+(select distinct
+org.id as organisation_id
+,acc.id as organisation_sf_id
+,org.name as organisation_name
+,true as is_active
+,false as is_orphan
+,mod(organisation_id,5)+1 health_status --dummy date for the moment(1-5 for the 5 possible states)
+,to_date('1900-01-01', 'YYYY-MM-DD') as epc_renewal_date
+,to_date('1900-01-01', 'YYYY-MM-DD') as aep_renewal_date
+,acc.account_type__c  as account_type
+,own.name as org_owner_name
+,current_timestamp as created_date 	
+,current_timestamp as modified_date
+FROM execprod.stg_sf_opportunity_line_item oli
+  JOIN execprod.stg_sf_opportunity opp
+    ON oli.opportunityid = opp.id
+  JOIN execprod.stg_sf_accounts acc
+    ON opp.accountid = acc.id
+  JOIN execprod.stg_org_orgs org
+    ON acc.id = org.salesforce_id
+  left join execprod.stg_sf_user own
+    ON own.id = acc.ownerid
+  where 1=1
+  and opp.isclosed = true
+  and opp.iswon = true
+  and current_date between oli.product_start_date and oli.product_end_date
+  and oli.product_end_date is not null
+  --and oli.finance_code__c in/not in ('','') - will be used once we get the logic
+  --exclude B2C account - no idea how to identify
+  --possibly exclude other type of accounts - no idea how to identify them
+  --and acc.type in/not in ('Client','Visited','Partner','Channel Partner','Client Non Enterprise','Prospect','Competitor','Lapsed Client','Business School') - might be used, all possible values listed
+  --other clauses
+union
+--orphaned platform organisations with no matching salesforce execprod.stg_sf_accounts
+--to be included for the moment as per discussion between Luiza and Angel
+select distinct
+org.id as organisation_id
+,acc.id as organisation_sf_id
+,org.name as organisation_name
+,true as is_active
+,true as is_orphan
+,0 health_status
+,to_date('1900-01-01', 'YYYY-MM-DD') as epc_renewal_date
+,to_date('1900-01-01', 'YYYY-MM-DD') as aep_renewal_date
+,null as account_type
+,null as org_owner_name
+,current_timestamp as created_date
+,current_timestamp as modified_date
+from execprod.stg_org_orgs org
+	left join execprod.stg_sf_accounts acc
+		on org.salesforce_id =acc.id
+where acc.id is null
+)
+,dimproduct as
+(
+select distinct
+org.organisation_id
+,org.organisation_sf_id
+,opp.id as opportunity_sf_id
+,opp.name as opportunity_name
+,oli.id as product_sf_id
+,oli.product_name as product_name
+,oli.finance_code__c as finance_code
+,case when oli.finance_code__c in ('ALP 10','ALP 20','Conv IUC','Conv MP','EPC','GRP COA','ILC-3','IUC',
+				'IUC 365','MGR ADD','Mgr Seat','PF Seat','PFPart','IUC 180','ILC-2','ILC-5','VPF') --and extra condition based on response from execonline
+		then 'EPC'
+	when  oli.finance_code__c in ('AEP','AEP Explorer','AEP Free','AEPExplorer','AEP Con','UNMS','UPF') --and extra condition based on response from execonline
+		then 'AEP'
+	when oli.finance_code__c = 'Multi'
+		then 'Multi'
+	end as product_type
+,oli.product_start_date as product_start_date
+,oli.product_end_date as product_end_date
+,case when oli.finance_code__c in ('ALP 10','ALP 20','Conv IUC','Conv MP','EPC','GRP COA','ILC-3','IUC'
+				,'IUC 365','MGR ADD','Mgr Seat','PF Seat','PFPart','IUC 180','ILC-2','ILC-5','VPF') --and extra condition based on response from execonline
+		then oli.epcs_total
+	when  oli.finance_code__c in ('AEP','AEP Explorer','AEP Free','AEPExplorer','AEP Con','UNMS','UPF') --and extra condition based on response from execonline
+		then 0
+	when oli.finance_code__c = 'Multi'
+		then 0
+	end as epc_total
+,oli.quantity 	--diferent value than epcs_total for EPC products
+,oli.totalprice --=unitprice*quantity
+,oli.unitprice	--=totalprice/quantity
+,oli.isrealepcbusiness	--will remove once clarified what they are used for
+,oli.isepcproduct		--will remove once clarified what they are used for
+,case when current_date between oli.product_start_date and oli.product_end_date
+		then true
+	else false
+	end as is_active
+,current_timestamp as created_date
+,current_timestamp as modified_date
+,null as orig_hash
+,null as upd_hash
+from dimorganisation org
+  JOIN execprod.stg_sf_opportunity opp
+    on org.organisation_sf_id = opp.accountid
+  join execprod.stg_sf_opportunity_line_item oli
+    ON oli.opportunityid = opp.id
+where 1=1
+	and opp.isclosed = true
+	and opp.iswon= true
+	and opp.isdeleted is false
+	and oli.isdeleted is false
+	and oli.finance_code__c in ('ALP 10','ALP 20','Conv IUC','Conv MP','EPC','GRP COA','ILC-3','IUC',
+				'IUC 365','MGR ADD','Mgr Seat','PF Seat','PFPart','IUC 180','ILC-2','ILC-5','VPF'
+				,'AEP','AEP Explorer','AEP Free','AEPExplorer','AEP Con','UNMS','UPF','Multi')
+	--and current_date between oli.product_start_date and oli.product_end_date  -- active product only
+	and oli.product_end_date > '2020-01-01' -- all products starting 2020-01-01
+	--and conditions in the product type case
+)
+,org_update as(
+select org.organisation_id
+,isnull(max(epc.product_end_date),to_date('1900-01-01', 'YYYY-MM-DD')) as epc_renewal_date
+,isnull(max(aep.product_end_date),to_date('1900-01-01', 'YYYY-MM-DD')) as aep_renewal_date
+from dimorganisation org
+	left join dimproduct epc
+		on org.organisation_id = epc.organisation_id and epc.product_type = 'EPC'
+		and epc.product_end_date >= current_date
+	left join dimproduct aep
+		on org.organisation_id = aep.organisation_id and aep.product_type = 'AEP'
+		and aep.product_end_date >= current_date
+where org.is_orphan is false
+group by
+	org.organisation_id
+	,case when epc.product_sf_id is null
+		and aep.product_sf_id is null
+	then false
+	else true end
+	,org.aep_renewal_date
+	,org.epc_renewal_date
+--having org.aep_renewal_date != isnull(max(aep.product_end_date),to_date('1900-01-01', 'YYYY-MM-DD'))
+--	or org.epc_renewal_date != isnull(max(epc.product_end_date),to_date('1900-01-01', 'YYYY-MM-DD'))
+)
+	
+select
+org.organisation_id
+,org.organisation_sf_id
+,org.organisation_name
+,org.is_active
+,org.is_orphan
+,org.health_status
+,upd.epc_renewal_date
+,upd.aep_renewal_date
+,org.account_type
+,org.org_owner_name
+,org.created_date
+,org.modified_date
+from
+dimorganisation org join org_update upd on org.organisation_id = upd.organisation_id
+where upd.epc_renewal_date != '1900-01-01' or upd.aep_renewal_date != '1900-01-01'
