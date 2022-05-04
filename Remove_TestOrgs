@@ -1,0 +1,29 @@
+WHERE email_domains not like 'Execonline'
+ and [name] not like 'Org %'
+ and lower([name]) not like 'org+%'
+  and lower([name]) not like 'org %'
+  and lower([name]) not like 'org'
+ and lower([name]) not like 'org-%'
+and lower([name]) not like 'orgqa%'
+ and lower([name]) not like 'test %'
+ and lower([name]) not like 'testqa%'
+ and [name] not like 'SSO%'
+ and [name] not like 'QA %'
+ and [name] not like 'Deleted%'
+ and [name] not like 'EXO%'
+ and [name] not like 'ExecOnline%' Edited
+To remove test students from the sf_sttudents table, we use this:
+AND lower(s.email) NOT LIKE '%execonline.com%' --! the next four lines attempt to catch non test labeld test, qa and internal students
+        AND lower(s.email) NOT LIKE 'qaexeconline%@gmail.com'
+        AND lower(s.account) NOT LIKE '%execonline%'
+        AND lower(s.account) NOT LIKE '%exo%l%&%d%'
+        AND lower(s.status) NOT IN (
+          'auditor',
+          'prospect',
+          'not participating',
+          'hold',
+          'n/a',
+          'n\a',
+          'potential',
+          'registered',
+          'completed '
